@@ -30,6 +30,8 @@ Claude Code ──MCP/stdio──► server/mcp_server.py ──localhost TCP─
 - **What the bridge exposes:** the Resolve API, on `127.0.0.1` only, protected by a per-session token. It does not change Resolve's preferences or security settings.
 - **Where tool logic runs:** in the MCP server against proxied API objects (about 0.1 ms per call). Bridge mode and Studio direct mode therefore run the exact same code.
 
+> **New here? Follow the step-by-step [INSTALL.md](INSTALL.md).**
+
 ## Requirements
 
 - DaVinci Resolve 18.5 or newer (tested on **21.1.1 free**, Windows 11). The free version is at https://www.blackmagicdesign.com/products/davinciresolve
