@@ -21,6 +21,11 @@
       ncnn-vulkan), plus `ai_tools_status` and `ai_tools_install`. Missing tools return needs_install so Claude asks
       before downloading from the official sources. Verified: clean-venv install, transcription, SRT import into the
       media pool, checksum-verified Real-ESRGAN install, and a 4x upscale.
+- [x] v1.3.0: field-report fixes.
+  - Fixed: still lengths, missing tracks created, not_placed reporting, export_frame range reset, playback-fps
+    warning, regex settings filter, Fusion commit, output-cache constants.
+  - New tools: list_transitions and captions_from_srt.
+  - New skill reference.md with the field notes.
 
 ## Review
 - **Free edition findings.**
@@ -40,4 +45,11 @@
   - faster-whisper 1.2.1 breaks with PyAV 18 and newer (`metadata_errors` kwarg), so installs pin `av<18`.
   - A `whisper` package without torch counts as not installed.
   - An SRT imported into the media pool becomes a Subtitle clip.
+- **Field report (v1.3.0).**
+  - Stills honour the clip's mark in/out, counted in the clip's own fps. Set FPS = timeline fps and mark 0..n-1,
+    append, then restore both.
+  - A still appended over occupied space returns a dead item (start/end None).
+  - InsertFusionTitleIntoTimeline always targets V1 (fails when V1 is locked), so a bare Text+ can't go on an
+    upper track.
+  - Subtitle clips ignore recordFrame. Passing startFrame/endFrame for them crashed Resolve 21.1.
 - **Performance.** A bridge round trip takes about 0.14 ms, and most tools finish in under 100 ms.

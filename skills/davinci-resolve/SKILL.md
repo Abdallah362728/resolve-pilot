@@ -23,6 +23,7 @@ Why the Console? On the free edition, Scripts-menu scripts run sandboxed without
   - `record_frame` is the absolute timeline frame or a timecode.
   - Timeline **markers** use frames *relative to the timeline start*. Timecodes are converted for you.
 - Track indices are 1-based. Track types are `video`, `audio`, `subtitle`.
+- Appends never overwrite: if the range is occupied, the existing clip wins and the new one shows up in `not_placed`. Stills get exactly the requested length.
 
 ## 3. Recipes
 - **Rough cut**: `media_import` → `media_pool_list` → `timeline_create {name, clips:[...]}` → `timeline_info`.
@@ -30,8 +31,10 @@ Why the Console? On the free edition, Scripts-menu scripts run sandboxed without
 - **Titles and generators**: `timeline_insert {kind:"fusion_title", name:"Text+", position:"01:00:05:00", duration:72, text:"Hello", title_inputs:{Size:0.1}}`.
   - The default `mode:"place"` puts the item on a free track above V1 and moves nothing else. It is wrapped in a compound clip with a maximum length of about 5 s.
   - `mode:"insert"` is Resolve's own ripple insert on V1.
+  - To edit a placed title by hand, the user right-clicks it, chooses *Open in Timeline* and edits the inner Text+ in the Inspector.
+- **Captions**: `transcribe` → `captions_from_srt {path, style}` (styled Text+ titles on one track).
 - **Transitions, fades, speed** (Resolve 21.1+): use `timeline_item_update` with:
-  - `transition:{type:"Cross Dissolve", position:"start"|"end", duration}`
+  - `transition:{type:"Cross Dissolve", position:"start"|"end", duration}`. Get valid names from `list_transitions`; Fusion ones such as "Glitch" need `category:"fusion"`.
   - `fades:{FadeIn, FadeOut}`
   - `speed:{Percentage}`
 - **Transform/crop/opacity**: `timeline_item_update {items, properties:{ZoomX:1.2, ZoomY:1.2, Pan:100, Opacity:50}}`.
@@ -64,6 +67,8 @@ Why the Console? On the free edition, Scripts-menu scripts run sandboxed without
   - It mirrors the official Python API.
   - Set `result = ...` to return data. The namespace persists between calls.
 - Use `language:"lua"` to run Lua *inside* Resolve, with `resolve`, `fusion`, `bmd` and `args`; return a value. It is fastest for big loops.
+- **Fusion:** script it in Lua. After scripted comp edits, call `fusion_comp {item, action:"commit"}` or they won't render.
+- **Batching:** many edits run much faster as `ops.<fn>(resolve, {...})` calls inside one `resolve_exec` than as separate tool calls.
 - Look up exact methods with `resolve_api_reference {class_name:"TimelineItem"}` or `{query:"Transition"}`. These come from the user's installed version.
 
 ## 6. Free vs Studio, and known Resolve quirks
@@ -71,9 +76,21 @@ Why the Console? On the free edition, Scripts-menu scripts run sandboxed without
   - AI tools: Magic Mask, Smart Reframe, scene-cut detection, voice isolation, IntelliSearch, speech generation. (Transcription and upscaling: use section 4.)
   - Some codecs, output above UHD/60p, and Dolby Vision.
 - **Frame rate** can't change once a timeline has clips. `project_settings` reports this under `not_applied`.
+- **Playback frame rate** can't be set by script. When `resolve_status` or `project_create` returns a `warning` about it, pass the fix on to the user.
 - **Frame checks:** `export_frame` renders the fully composited frame (titles, upper tracks, grade) by default. `method:"still"` is quicker but shows only the clip under the playhead.
 
-## 7. Etiquette
+## 7. Field notes
+Read [reference.md](reference.md) for verified details when the task touches any of these:
+- VFR, HEVC or AV1 media, and proxies
+- trims and freeze frames
+- sizing maths between Inspector and Fusion
+- Fusion animation
+- caption styling and Arabic text
+- audio levels, CDL strings
+- fast check renders
+- UI quirks
+
+## 8. Etiquette
 - **Destructive actions need the user's go-ahead** unless they asked for them: deleting clips, timelines, projects or render jobs, and ripple deletes.
 - **Save** with `project_manage {action:"save"}` after significant changes.
 - **Long renders**: use `render_timeline {wait:false}`, then `render_jobs {action:"status"}`.

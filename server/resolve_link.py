@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BRIDGE_SRC = os.path.join(os.path.dirname(HERE), "bridge", "ResolvePilot Bridge.lua")
 STATE_FILE = os.path.join(os.path.expanduser("~"), ".resolve-pilot", "bridge.json")
 BRIDGE_TIMEOUT = float(os.environ.get("RESOLVE_PILOT_TIMEOUT", "600"))
+HELLO_TIMEOUT = 5.0
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -101,7 +102,7 @@ def bridge_alive():
             st = json.load(fh)
         c = BridgeClient(st)
         try:
-            c.request("hello")
+            c.handshake()
             return True
         finally:
             c.close()
@@ -200,6 +201,16 @@ class BridgeClient(object):
         self.file = self.sock.makefile("rwb")
         self.closed = False
         self.hello = None
+
+    def handshake(self):
+        """hello with a short timeout: a port left open by a crashed Resolve accepts but never answers."""
+        self.sock.settimeout(HELLO_TIMEOUT)
+        try:
+            self.hello = self.request("hello")
+        finally:
+            if not self.closed:
+                self.sock.settimeout(BRIDGE_TIMEOUT)
+        return self.hello
 
     def close(self):
         self.closed = True
@@ -385,7 +396,7 @@ class ResolveLink(object):
             if st:
                 try:
                     c = BridgeClient(st)
-                    c.hello = c.request("hello")
+                    c.handshake()
                     self.client, self.root, self.mode = c, RemoteObject(c, 0, "Resolve"), "bridge"
                     return self.root
                 except Exception:

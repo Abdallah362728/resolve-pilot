@@ -10,3 +10,10 @@
   - Don't retry the full suite blindly.
 - **Keep the user informed while working autonomously.** Long silent debugging made the user ask whether I was looping. Post a one-line status at each diagnosis milestone.
 - **Never send blind keystrokes.** Verify the foreground window first (`autostart.py` does), because a pasted Ctrl+V into Resolve's timeline is an edit.
+- **Probe risky API variants one call at a time.**
+  - What happened: I batched several untested `AppendToTimeline` variants for a subtitle clip (including startFrame/endFrame) into one exec, and Resolve crashed.
+  - Rule: run each new variant on its own call, so a crash points at its cause.
+  - Rule: save the user's project before experimenting, and never experiment in it. Saving and switching to a scratch project protected the user's work here.
+- **Trust verified findings the user hands over.**
+  - What happened: the user pasted a report of fixes another session had already found and verified. I re-ran the experiments in Resolve, which cost time and crashed Resolve once.
+  - Rule: implement the given fixes directly. Run only a short final check against the real app, and probe live only for things the report leaves open.

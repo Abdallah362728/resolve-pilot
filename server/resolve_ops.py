@@ -281,7 +281,7 @@ def _item_summary(item, tt=None, idx=None, fps=None, drop=False, full=False):
         "end": item.GetEnd(),
         "duration": item.GetDuration(),
     }
-    if fps:
+    if fps and d["start"] is not None and d["end"] is not None:
         d["start_tc"] = frames_to_tc(d["start"], fps, drop)
         d["end_tc"] = frames_to_tc(d["end"], fps, drop)
     if tt:
@@ -330,6 +330,18 @@ def _markers_out(markers):
 # Application / status
 # ---------------------------------------------------------------------------
 
+def _playback_fps_warning(proj):
+    """Resolve's scripting API cannot change timelinePlaybackFrameRate; a mismatch makes previews stutter."""
+    tl = _try(proj.GetCurrentTimeline)
+    play = _try(lambda: proj.GetSetting("timelinePlaybackFrameRate"))
+    base = _try(lambda: (tl or proj).GetSetting("timelineFrameRate"))
+    if not play or not base or _same_setting(play, str(base)):
+        return None
+    return ("Playback frame rate (%s) differs from the timeline frame rate (%s), so preview playback will lag. "
+            "The scripting API cannot change it: ask the user to set File > Project Settings > Master Settings > "
+            "Playback frame rate to %s." % (play, base, base))
+
+
 def status(resolve, args):
     d = {
         "product": _try(resolve.GetProductName),
@@ -351,6 +363,9 @@ def status(resolve, args):
                              "start_tc": _try(tl.GetStartTimecode),
                              "playhead_tc": _try(tl.GetCurrentTimecode)}
         d["rendering"] = _try(proj.IsRenderingInProgress)
+        warn = _playback_fps_warning(proj)
+        if warn:
+            d["warning"] = warn
     if pm:
         d["database"] = _try(pm.GetCurrentDatabase)
     return d
@@ -426,6 +441,9 @@ def project_create(resolve, args):
     out = {"ok": True, "project": p.GetName()}
     if args.get("settings"):
         out["settings"] = project_settings(resolve, {"set": args["settings"]})
+    warn = _playback_fps_warning(p)
+    if warn:
+        out["warning"] = warn
     return out
 
 
@@ -506,16 +524,28 @@ def project_settings(resolve, args):
                     target.SetSetting(k, v)
         current = _try(target.GetSettings) or _try(target.GetSetting) or {}
         failed = [k for k, v in settings.items() if not _same_setting(current.get(k), v)]
-        return {"ok": not failed, "not_applied": failed,
-                "note": "Timeline frame rate cannot change once a timeline has clips." if
-                "timelineFrameRate" in failed else None}
+        notes = []
+        if "timelineFrameRate" in failed:
+            notes.append("Timeline frame rate cannot change once a timeline has clips.")
+        if "timelinePlaybackFrameRate" in failed:
+            notes.append("timelinePlaybackFrameRate cannot be set through the API; ask the user to set it in "
+                         "File > Project Settings > Master Settings.")
+        out = {"ok": not failed, "not_applied": failed, "note": " ".join(notes) or None}
+        warn = _playback_fps_warning(_project(resolve))
+        if warn:
+            out["warning"] = warn
+        return out
     allset = _try(target.GetSettings) or _try(target.GetSetting) or {}
     keys = args.get("keys")
     if keys:
         return {k: allset.get(k) for k in keys}
     flt = args.get("filter")
     if flt:
-        return {k: v for k, v in allset.items() if flt.lower() in k.lower()}
+        try:
+            rx = re.compile(flt, re.I)
+        except re.error:
+            rx = re.compile(re.escape(flt), re.I)
+        return {k: v for k, v in allset.items() if rx.search(k)}
     return allset
 
 
@@ -780,16 +810,73 @@ def timeline_append(resolve, args):
     if args.get("timeline"):
         proj.SetCurrentTimeline(tl)
     infos = _clip_infos(mp, tl, args["clips"])
-    items = _try(lambda: mp.AppendToTimeline(infos))
-    if not items and all(len(i) == 1 for i in infos):
-        items = mp.AppendToTimeline([i["mediaPoolItem"] for i in infos])
+    for i in infos:  # Resolve silently falls back to track 1 when the track doesn't exist
+        kind = "audio" if i.get("mediaType") == 2 else "video"
+        while i.get("trackIndex") and tl.GetTrackCount(kind) < i["trackIndex"]:
+            _need(tl.AddTrack(kind), "could not add %s track %d" % (kind, i["trackIndex"]))
+    stills = [i for i in infos if "endFrame" in i and
+              _try(lambda: i["mediaPoolItem"].GetClipProperty("Type")) == "Still"]
+    rest = [i for i in infos if i not in stills]
+    items = []
+    if rest:
+        items = _try(lambda: mp.AppendToTimeline(rest))
+        if not items and all(len(i) == 1 for i in rest):
+            items = mp.AppendToTimeline([i["mediaPoolItem"] for i in rest])
+        items = list(items or [])
+    for i in stills:
+        it = _append_still(mp, tl, i)
+        if it:
+            items.append(it)
     _need(items, "AppendToTimeline failed (check frame ranges / track index / clip type)")
+    # Resolve returns a dead item (no start/end) when the target range was already occupied.
+    dropped = [it for it in items if _try(it.GetStart) is None]
+    items = [it for it in items if it not in dropped]
     fps, drop = _fps(tl)
     out = []
     for it in items:
-        tt_idx = _try(it.GetTrackTypeAndIndex) or [None, None]
-        out.append(_item_summary(it, tt_idx[0], tt_idx[1], fps, drop))
-    return {"appended": len(out), "items": out}
+        # The edit is already applied; a summary failure must not turn it into a reported error.
+        try:
+            tt_idx = _try(it.GetTrackTypeAndIndex) or [None, None]
+            out.append(_item_summary(it, tt_idx[0], tt_idx[1], fps, drop))
+        except Exception as e:
+            out.append({"id": _try(lambda: _item_id(it)), "name": _try(it.GetName), "summary_error": str(e)})
+    res = {"appended": len(out), "items": out}
+    if dropped:
+        res["not_placed"] = len(dropped)
+        res["note"] = ("%d clip(s) were not placed because their range overlapped existing clips: appends never "
+                       "overwrite, the existing clip wins. Delete or move the clips in the way first."
+                       % len(dropped))
+    return res
+
+
+def _append_still(mp, tl, info):
+    """Place a still at recordFrame for exactly endFrame - startFrame frames.
+
+    AppendToTimeline ignores startFrame/endFrame for stills (they always get the standard still duration),
+    but it honours the clip's mark in/out, counted in the clip's own fps (stills import at the project's
+    default rate, not the timeline's). So briefly give the still the timeline fps and a matching mark range,
+    append it, then restore the clip's fps and marks; items already on timelines keep their length.
+    """
+    clip = info["mediaPoolItem"]
+    length = info["endFrame"] - info.get("startFrame", 0)
+    _need(length > 0, "end_frame must be greater than start_frame")
+    prev_fps = _try(lambda: clip.GetClipProperty("FPS"))
+    prev_marks = _try(clip.GetMarkInOut) or {}
+    fps, _ = _fps(tl)
+    try:
+        clip.SetClipProperty("FPS", ("%g" % fps))
+        clip.SetMarkInOut(0, length - 1, "all")
+        rest = {k: v for k, v in info.items() if k not in ("startFrame", "endFrame")}
+        placed = mp.AppendToTimeline([rest])
+    finally:
+        if prev_fps is not None:
+            _try(lambda: clip.SetClipProperty("FPS", str(prev_fps)))
+        _try(lambda: clip.ClearMarkInOut("all"))
+        for kind in ("video", "audio"):
+            m = prev_marks.get(kind) or {}
+            if "in" in m and "out" in m:
+                _try(lambda: clip.SetMarkInOut(m["in"], m["out"], kind))
+    return placed[0] if placed else None
 
 
 def timeline_item_info(resolve, args):
@@ -834,8 +921,18 @@ def timeline_item_update(resolve, args):
             r["transition"] = _add_transition(it, args["transition"])
         if args.get("output_blanking"):
             r["output_blanking"] = _call(it, "SetOutputBlanking", args["output_blanking"])
+        if args.get("fusion_output_cache"):
+            r["fusion_output_cache"] = bool(it.SetFusionOutputCache(_cache_const(resolve, args["fusion_output_cache"])))
         results.append(r)
     return results
+
+
+def _cache_const(resolve, value):
+    """SetFusionOutputCache only accepts resolve.CACHE_* constants, not strings like "auto"."""
+    key = {"auto": "CACHE_AUTO_ENABLED", "on": "CACHE_ENABLED", "enabled": "CACHE_ENABLED",
+           "off": "CACHE_DISABLED", "disabled": "CACHE_DISABLED"}.get(str(value).lower())
+    _need(key, "fusion_output_cache must be auto|on|off")
+    return getattr(resolve, key)
 
 
 def _add_transition(item, opts):
@@ -1130,8 +1227,11 @@ def timeline_insert(resolve, args):
     out = _item_summary(it, tt_idx[0], tt_idx[1], fps, drop)
     out.update(styled)
     out["media_pool_clip_id"] = _clip_id(mpi)
-    out["note"] = ("Placed as a compound clip (no ripple). Its max length is %d frames; to edit the text later, "
-                   "re-create it or open the compound clip in Resolve." % native_len)
+    out["note"] = ("Placed as a compound clip so nothing rippled (max length %d frames). To edit the text by hand: "
+                   "right-click the clip > Open in Timeline, select the Text+ clip inside, edit it in the "
+                   "Inspector, then click the timeline name in the breadcrumb to go back. Resolve's API cannot "
+                   "place a bare Text+ on an upper track; mode=\"insert\" puts a directly editable Text+ on V1 "
+                   "but ripples that track." % native_len)
     return out
 
 
@@ -1441,6 +1541,8 @@ def export_frame(resolve, args):
             _try(lambda: proj.SetCurrentRenderFormatAndCodec(prev_fc["format"], prev_fc["codec"]))
         if prev_mode is not None:
             _try(lambda: proj.SetCurrentRenderMode(prev_mode))
+        # The one-frame MarkIn/MarkOut would otherwise stick and make the next render a single frame.
+        _try(lambda: proj.SetRenderSettings({"SelectAllFrames": True}))
         shutil.rmtree(tmp, ignore_errors=True)
         if prev_page and _try(resolve.GetCurrentPage) != prev_page:
             _try(lambda: resolve.OpenPage(prev_page))
@@ -1554,7 +1656,10 @@ def render_timeline(resolve, args):
         cfg["format"], cfg["codec"] = "mp4", "H264"
     conf = render_configure(resolve, cfg)
     if args.get("mark_in") is not None and args.get("mark_out") is not None:
-        p.SetRenderSettings({"MarkIn": _to_frame(args["mark_in"], tl), "MarkOut": _to_frame(args["mark_out"], tl)})
+        p.SetRenderSettings({"SelectAllFrames": False, "MarkIn": _to_frame(args["mark_in"], tl),
+                             "MarkOut": _to_frame(args["mark_out"], tl)})
+    elif "SelectAllFrames" not in (args.get("settings") or {}) and "MarkIn" not in (args.get("settings") or {}):
+        p.SetRenderSettings({"SelectAllFrames": True})
     jid = p.AddRenderJob()
     _need(jid, "AddRenderJob failed")
     _need(p.StartRendering([jid], False), "StartRendering failed")
@@ -1580,6 +1685,23 @@ def render_timeline(resolve, args):
 # ---------------------------------------------------------------------------
 # Fusion
 # ---------------------------------------------------------------------------
+
+def _commit_comp(item, index=1):
+    """Scripted Fusion edits (AddTool, SetInput, keyframes) don't render until the comp is reloaded.
+    Round-trip it through a .comp file: export, import, load the imported comp."""
+    import tempfile
+    import shutil
+    d = tempfile.mkdtemp(prefix="resolvepilot_comp_")
+    try:
+        path = os.path.join(d, "commit.comp")
+        _need(item.ExportFusionComp(path, int(index)), "ExportFusionComp failed")
+        _need(item.ImportFusionComp(path), "ImportFusionComp failed")
+        names = item.GetFusionCompNameList() or []
+        _need(names and item.LoadFusionCompByName(names[-1]), "LoadFusionCompByName failed")
+        return {"committed": True, "active_comp": names[-1], "comps": names}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 
 def fusion_comp(resolve, args):
     tl = _timeline(resolve, args.get("timeline"))
@@ -1619,5 +1741,76 @@ def fusion_comp(resolve, args):
         res = {}
         for k, v in (args.get("inputs") or {}).items():
             res[k] = _try(lambda: tool.SetInput(k, v), "error") != "error"
+        if args.get("commit", True):
+            res["_commit"] = _commit_comp(it, int(args.get("index", 1)))
         return res
-    raise OpError("action must be list|add|import|export|load|delete|rename|set_inputs")
+    if action == "commit":
+        return _commit_comp(it, int(args.get("index", 1)))
+    raise OpError("action must be list|add|import|export|load|delete|rename|set_inputs|commit")
+
+
+# ---------------------------------------------------------------------------
+# Captions from SRT (styled Text+)
+# ---------------------------------------------------------------------------
+
+CAPTION_STYLES = {
+    # Text+ inputs: outline = shading element 2, shadow = element 3.
+    "default": {"Font": "Arial", "Style": "Bold", "Size": 0.06, "Center": [0.5, 0.12],
+                "Red1": 1, "Green1": 1, "Blue1": 1,
+                "Enabled2": 1, "Thickness2": 0.08, "Red2": 0, "Green2": 0, "Blue2": 0, "Alpha2": 1},
+    "shadow": {"Font": "Arial", "Style": "Bold", "Size": 0.06, "Center": [0.5, 0.12],
+               "Red1": 1, "Green1": 1, "Blue1": 1,
+               "Enabled3": 1, "Red3": 0, "Green3": 0, "Blue3": 0, "Alpha3": 0.8, "Softness3": 0.3,
+               "ShadowOffset3": [0.004, -0.004]},
+    "plain": {"Font": "Arial", "Style": "Regular", "Size": 0.05, "Center": [0.5, 0.12]},
+}
+
+
+def _parse_srt(path):
+    with open(path, encoding="utf-8-sig") as f:
+        blocks = re.split(r"\n\s*\n", f.read().replace("\r\n", "\n").strip())
+    cues = []
+    for b in blocks:
+        lines = b.strip().split("\n")
+        for i, line in enumerate(lines):
+            m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)", line)
+            if m:
+                g = [int(x) for x in m.groups()]
+                start = g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000.0
+                end = g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000.0
+                text = "\n".join(lines[i + 1:]).strip()
+                if text:
+                    cues.append((start, end, re.sub(r"<[^>]+>", "", text)))
+                break
+    return cues
+
+
+def captions_from_srt(resolve, args):
+    """Place every SRT cue as a styled Text+ title (place mode: nothing ripples)."""
+    tl = _timeline(resolve, args.get("timeline"))
+    fps, drop = _fps(tl)
+    path = os.path.abspath(os.path.expanduser(args["path"]))
+    _need(os.path.isfile(path), "SRT not found: %s" % path)
+    cues = _parse_srt(path)
+    _need(cues, "No cues found in %s" % path)
+    style = args.get("style") or "default"
+    _need(style in CAPTION_STYLES, "style must be one of %s" % ", ".join(CAPTION_STYLES))
+    inputs = dict(CAPTION_STYLES[style], **(args.get("title_inputs") or {}))
+    offset = _to_frame(args["offset"], tl) if args.get("offset") is not None else tl.GetStartFrame()
+    track = args.get("track")
+    placed, failed = [], []
+    for start, end, text in cues:
+        rec = offset + int(round(start * fps))
+        dur = max(1, int(round(end * fps)) - int(round(start * fps)))
+        try:
+            r = timeline_insert(resolve, {"kind": "fusion_title", "name": "Text+", "position": rec,
+                                          "duration": dur, "text": text, "title_inputs": inputs,
+                                          "track": track, "label": "Caption - " + text[:40],
+                                          "bin": args.get("bin") or "ResolvePilot/Captions"})
+            track = track or int(r["track"][1:])  # keep every caption on one track
+            placed.append({"id": r["id"], "start_tc": r.get("start_tc"), "text": text})
+        except Exception as e:
+            failed.append({"text": text, "start_tc": frames_to_tc(rec, fps, drop), "error": str(e)})
+    return {"placed": len(placed), "failed": failed, "track": "V%s" % track if track else None,
+            "captions": placed[:50],
+            "note": "Each caption is a Text+ inside a compound clip; see timeline_insert's note for editing."}

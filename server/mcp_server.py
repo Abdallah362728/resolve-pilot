@@ -23,7 +23,7 @@ from resolve_ops import OpError  # noqa: E402
 from ai_tools import AIToolError  # noqa: E402
 
 SERVER_NAME = "resolve-pilot"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 LINK = ResolveLink()
 
 # ---------------------------------------------------------------------------
@@ -212,6 +212,66 @@ tool("resolve_api_reference",
      "exact version). Use class_name to list a class's methods, or query for a regex search.",
      obj({"query": S, "class_name": S, "max_lines": I}), h_api_reference)
 
+# --- transitions -------------------------------------------------------------
+
+SIMPLE_TRANSITIONS = {  # built into Resolve (category "simple"); names as shown in the Effects library
+    "Dissolve": ["Cross Dissolve", "Additive Dissolve", "Blur Dissolve", "Dip To Color Dissolve",
+                 "Non-Additive Dissolve", "Smooth Cut"],
+    "Iris": ["Arrow Iris", "Cross Iris", "Diamond Iris", "Eye Iris", "Hexagon Iris", "Oval Iris",
+             "Pentagon Iris", "Square Iris", "Triangle Iris"],
+    "Motion": ["Barn Door", "Push", "Slide", "Split"],
+    "Shape": ["Box", "Heart", "Star", "Triangle Left", "Triangle Right"],
+    "Wipe": ["Band Wipe", "Center Wipe", "Clock Wipe", "Edge Wipe", "Radial Wipe", "Spiral Wipe",
+             "Venetian Blind Wipe", "X Wipe"],
+}
+
+
+def _fusion_template_roots():
+    p = resolve_link.resolve_paths()
+    inst = p["install_dir"]
+    roots = [os.path.join(inst, "Fusion"), os.path.join(inst, "Contents", "Resources", "Fusion"),
+             os.path.join(inst, "Contents", "Libraries", "Fusion"),
+             os.path.dirname(p["user_scripts_dir"])]  # user Fusion folder (Templates live next to Scripts)
+    if p["os"] == "windows":
+        roots.append(os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Blackmagic Design",
+                                  "DaVinci Resolve", "Fusion"))
+    return [r for r in roots if os.path.isdir(r)]
+
+
+def h_list_transitions(args):
+    """Fusion transition names come from the installed templates (loose .setting files and .drfx bundles
+    under Templates/Edit/Transitions), so they always match the user's Resolve version."""
+    import zipfile
+    found = set()
+    rx = re.compile(r"(?:^|/)Edit/Transitions/(?:[^/]+/)*([^/]+)\.setting$", re.I)
+    for root in _fusion_template_roots():
+        for dirpath, _dirs, files in os.walk(os.path.join(root, "Templates")):
+            for f in files:
+                full = os.path.join(dirpath, f).replace("\\", "/")
+                if f.lower().endswith(".drfx"):
+                    try:
+                        with zipfile.ZipFile(full) as z:
+                            found.update(m.group(1) for m in map(rx.search, z.namelist()) if m)
+                    except (OSError, zipfile.BadZipFile):
+                        pass
+                else:
+                    m = rx.search(full)
+                    if m:
+                        found.add(m.group(1))
+    return {
+        "usage": "timeline_item_update {transition:{type:<name>, category:'simple'|'fusion', position, duration}}",
+        "simple": SIMPLE_TRANSITIONS,
+        "fusion": sorted(found),
+        "note": "Simple names are Resolve's standard set; fusion names were read from the installed templates.",
+    }
+
+
+tool("list_transitions",
+     "Transition names this Resolve install accepts, for timeline_item_update's transition option: the built-in "
+     "'simple' set (Cross Dissolve, wipes, irises...) and every 'fusion' transition template installed "
+     "(e.g. Glitch, Zoom In). Fusion ones need category:'fusion'.",
+     obj({}), h_list_transitions)
+
 # --- local open-source AI (instead of Resolve's Studio-only AI features) ------
 
 def _source_files(args, key_path, key_clips):
@@ -321,8 +381,10 @@ OPS_TOOLS = [
           "archive_media": B, "archive_render_cache": B, "archive_proxy": B}, ["action"])),
     ("project_settings", "project_settings",
      "Get or set project settings (or timeline settings when timeline is given). Without `set`, returns all "
-     "settings, filtered by `keys` or a `filter` substring. Values are strings, e.g. {timelineFrameRate:'30', "
-     "timelineResolutionWidth:'3840'}. Timeline settings need useCustomSettings:'1'.",
+     "settings, filtered by `keys` or a `filter` (case-insensitive regex on the key, e.g. 'playback|proxy'). "
+     "Values are strings, e.g. {timelineFrameRate:'30', "
+     "timelineResolutionWidth:'3840'}. Timeline settings need useCustomSettings:'1'. timelinePlaybackFrameRate "
+     "cannot be set through the API (the user must set it in Project Settings > Master Settings).",
      obj({"set": O, "keys": arr(S), "filter": S, "timeline": {"type": ["string", "boolean"]}})),
 
     ("media_storage_browse", "media_storage_browse",
@@ -366,7 +428,9 @@ OPS_TOOLS = [
      obj({"timeline": TIMELINE, "include_items": B})),
     ("timeline_append", "timeline_append",
      "Edit media pool clips into the timeline. Each clip may set source in/out (start_frame/end_frame), "
-     "track, record_frame (where to place it) and media_type. Without record_frame clips are appended at the end.",
+     "track, record_frame (where to place it) and media_type. Without record_frame clips are appended at the end. "
+     "Missing tracks are created. Stills get exactly end_frame - start_frame frames. Appends never overwrite: "
+     "a clip whose range overlaps existing clips is not placed (reported in not_placed).",
      obj({"clips": arr(CLIP_SPEC), "timeline": TIMELINE}, ["clips"])),
     ("timeline_item_info", "timeline_item_info",
      "Full details of timeline items: transform/crop/composite properties, markers, flags, color, fusion comps, "
@@ -378,10 +442,12 @@ OPS_TOOLS = [
      "RetimeProcess, ...} (see resolve_api_reference class_name=TimelineItemProperties). Also name, enabled, "
      "clip_color, flags. Resolve 21.1+: fades {FadeIn, FadeOut} (frames), speed {Percentage, PitchCorrection, "
      "RippleTimeline}, transition {type:'Cross Dissolve', category:'simple'|'fusion'|'ofx'|'audio', "
-     "position:'start'|'end', alignment:'left'|'center'|'right', duration (frames)}, output_blanking.",
+     "position:'start'|'end', alignment:'left'|'center'|'right', duration (frames)} (names: list_transitions), "
+     "output_blanking, fusion_output_cache 'auto'|'on'|'off'.",
      obj({"items": ITEMS, "timeline": TIMELINE, "properties": O, "name": S, "enabled": B,
           "clip_color": {"type": ["string", "null"]}, "add_flags": arr(S), "clear_flags": S,
-          "fades": O, "speed": O, "transition": O, "output_blanking": O}, ["items"])),
+          "fades": O, "speed": O, "transition": O, "output_blanking": O,
+          "fusion_output_cache": enum(("auto", "on", "off"))}, ["items"])),
     ("timeline_items_delete", "timeline_items_delete", "Delete timeline items (optionally ripple delete).",
      obj({"items": ITEMS, "timeline": TIMELINE, "ripple": B}, ["items"])),
     ("timeline_items_link", "timeline_items_link", "Link or unlink timeline items (e.g. video with its audio).",
@@ -414,7 +480,8 @@ OPS_TOOLS = [
      "wrapped in a compound clip; max length = the effect's default, usually 5 s). mode='insert' uses Resolve's "
      "native insert edit at the playhead on V1, which ripples later clips. For Text+ titles, `text` sets the text "
      "and `title_inputs` sets Text+ inputs, e.g. {Size: 0.08, Font: 'Arial', Style: 'Bold', Red1: 1, Green1: 0.8, "
-     "Blue1: 0, Center: [0.5, 0.15]}.",
+     "Blue1: 0, Center: [0.5, 0.15]}. Outline: Enabled2, Thickness2, Red2/Green2/Blue2, Alpha2; shadow: Enabled3, "
+     "Red3/Green3/Blue3, Alpha3, Softness3, ShadowOffset3. Text+ handles right-to-left scripts such as Arabic.",
      obj({"kind": enum(("generator", "fusion_generator", "ofx_generator", "title", "fusion_title",
                         "fusion_composition")),
           "name": d(S, "Effects-library name, e.g. 'Text+' (fusion_title), 'Text' / 'Scroll' (title), "
@@ -482,11 +549,22 @@ OPS_TOOLS = [
 
     ("fusion_comp", "fusion_comp",
      "Fusion compositions on a timeline item: list (with tools) | add | import (.comp) | export | load | delete | "
-     "rename | set_inputs ({tool, inputs:{InputName: value}}). For deeper Fusion scripting use resolve_exec "
-     "with item.GetFusionCompByIndex(1).",
-     obj({"item": S, "action": enum(("list", "add", "import", "export", "load", "delete", "rename", "set_inputs")),
-          "path": S, "index": I, "name": S, "new_name": S, "tool": S, "inputs": O, "timeline": TIMELINE},
+     "rename | set_inputs ({tool, inputs:{InputName: value}}) | commit. Scripted comp changes do not render "
+     "until committed (export + re-import + load); set_inputs commits automatically (commit:false to skip), and "
+     "after your own resolve_exec Fusion edits call action:'commit'. Do Fusion scripting with "
+     "resolve_exec language:'lua' (Python cannot reach tool inputs as attributes).",
+     obj({"item": S, "action": enum(("list", "add", "import", "export", "load", "delete", "rename", "set_inputs",
+                                     "commit")),
+          "path": S, "index": I, "name": S, "new_name": S, "tool": S, "inputs": O, "commit": B,
+          "timeline": TIMELINE},
          ["item"])),
+    ("captions_from_srt", "captions_from_srt",
+     "Turn an .srt file into styled Text+ captions on one video track, one title per cue, without rippling "
+     "anything. style: default (white, black outline) | shadow | plain; title_inputs overrides Text+ inputs "
+     "(Font, Size, Center, colours...). offset = timeline frame/timecode of SRT time 0 (default: timeline start). "
+     "Each caption is a compound clip (see timeline_insert for how a person edits it).",
+     obj({"path": S, "style": enum(("default", "shadow", "plain")), "title_inputs": O, "track": I,
+          "offset": FRAME, "bin": S, "timeline": TIMELINE}, ["path"])),
 ]
 
 for _name, _fn, _desc, _schema in OPS_TOOLS:

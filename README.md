@@ -4,12 +4,12 @@ ResolvePilot is a Claude Code plugin that lets Claude work in **DaVinci Resolve*
 
 ## What Claude can do
 
-It has 47 MCP tools. Claude can:
+It has 49 MCP tools. Claude can:
 - **Projects:** create, open and save projects, and change their settings.
 - **Media:** import media and organise bins.
 - **Timelines:** build timelines and edit clips onto any track.
-- **Clips:** trim ranges; set transforms, crop and opacity; add fades, speed changes and transitions.
-- **Markers, titles and generators:** add markers; place titles and generators without rippling the timeline.
+- **Clips:** trim ranges (stills included); set transforms, crop and opacity; add fades, speed changes and transitions (with a list of valid transition names).
+- **Markers, titles and generators:** add markers; place titles and generators without rippling the timeline; turn an SRT into styled Text+ captions.
 - **Color:** grade with LUTs, CDL and DRX files; copy grades; manage versions and color groups.
 - **Fusion:** manage compositions.
 - **Interchange:** export and import FCPXML, EDL, AAF, OTIO and DRT.
@@ -116,7 +116,14 @@ Claude does not use Resolve's own AI for these. Those features are Studio-only, 
 - LUTs must live in Resolve's LUT folder, so external files are copied there.
 - Still export only shows the current clip, so `export_frame` renders the composited frame instead.
 
+**Edits and renders**
+- Stills ignore source ranges on append. `timeline_append` gives them the exact length anyway.
+- Appends never overwrite. Overlapping clips are reported as `not_placed` instead of failing.
+- Scripted Fusion changes don't render until the comp is reloaded. `fusion_comp` commits them.
+- A frame export used to leave a one-frame render range behind. It is reset now, and `render_timeline` renders all frames by default.
+
 **Settings**
+- The playback frame rate can't be set by script. `resolve_status` and `project_create` warn when it differs from the timeline rate.
 - Setting `useCustomSettings` and `timelineFrameRate` in one call can deadlock Resolve 21.1 when the project has compound clips, so they are always applied separately.
 
 **Bridge internals**
