@@ -15,13 +15,15 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import ai_tools  # noqa: E402
 import autostart  # noqa: E402
 import resolve_link  # noqa: E402
 from resolve_link import ResolveLink, ResolveError, NotConnected  # noqa: E402
 from resolve_ops import OpError  # noqa: E402
+from ai_tools import AIToolError  # noqa: E402
 
 SERVER_NAME = "resolve-pilot"
-SERVER_VERSION = "1.1.1"
+SERVER_VERSION = "1.2.0"
 LINK = ResolveLink()
 
 # ---------------------------------------------------------------------------
@@ -209,6 +211,91 @@ tool("resolve_api_reference",
      "Search the official scripting API documentation installed with Resolve (the .pyi/README for the user's "
      "exact version). Use class_name to list a class's methods, or query for a regex search.",
      obj({"query": S, "class_name": S, "max_lines": I}), h_api_reference)
+
+# --- local open-source AI (instead of Resolve's Studio-only AI features) ------
+
+def _source_files(args, key_path, key_clips):
+    """File paths from explicit paths and/or media pool clip refs."""
+    paths = args.get(key_path) or []
+    if isinstance(paths, str):
+        paths = [paths]
+    out = [os.path.abspath(os.path.expanduser(p)) for p in paths]
+    if args.get(key_clips):
+        for c in LINK.run("media_clip_info", {"clips": args[key_clips]}):
+            if not c.get("file_path"):
+                raise AIToolError("Clip %s has no source file" % c.get("name"))
+            out.append(c["file_path"])
+    if not out:
+        raise AIToolError("Give %s or %s" % (key_path, key_clips))
+    for p in out:
+        if not os.path.isfile(p):
+            raise AIToolError("File not found: %s" % p)
+    return out
+
+
+def _import_results(res, files, args, default_bin):
+    if res.get("ok") and args.get("import_to_media_pool"):
+        try:
+            res["media_pool"] = LINK.run("media_import", {"paths": files, "bin": args.get("bin") or default_bin})
+        except NotConnected as e:
+            res["media_pool"] = "not imported, Resolve not connected: %s" % e
+    return res
+
+
+def h_transcribe(args):
+    outputs = []
+    for src in _source_files(args, "path", "clip"):
+        r = ai_tools.transcribe(args, src)
+        if not r.get("ok"):
+            return r  # needs_install: the assistant must ask the user
+        outputs.append(r)
+    srts = [o["files"]["srt"] for o in outputs if "srt" in o["files"]]
+    res = outputs[0] if len(outputs) == 1 else {"ok": True, "results": outputs}
+    return _import_results(res, srts, args, "Transcripts")
+
+
+def h_upscale(args):
+    res = ai_tools.upscale(args, _source_files(args, "paths", "clips"))
+    return _import_results(res, [o["output"] for o in res.get("outputs", [])], args, "Upscaled")
+
+
+tool("ai_tools_status",
+     "Which local open-source AI tools are installed: speech-to-text (faster-whisper / openai-whisper) and the "
+     "Real-ESRGAN image upscaler, plus their official download sources.",
+     obj({}), ai_tools.status)
+tool("ai_tools_install",
+     "Download and install a local AI tool from its OFFICIAL source: faster-whisper or openai-whisper (PyPI, "
+     "into a private venv under ~/.resolve-pilot) or realesrgan (xinntao/Real-ESRGAN GitHub release, "
+     "checksum-verified). ONLY call this after the user explicitly agreed to the download, with "
+     "user_confirmed=true. May take several minutes.",
+     obj({"tool": enum(("faster-whisper", "openai-whisper", "realesrgan")), "user_confirmed": B},
+         ["tool", "user_confirmed"]), ai_tools.install)
+tool("transcribe",
+     "Transcribe speech in audio/video files with a LOCAL open-source Whisper engine (faster-whisper preferred, "
+     "else openai-whisper). Use this for ANY transcription, subtitle or caption request instead of Resolve's "
+     "built-in transcription. Writes .srt/.txt (default) next to the source or into output_dir; "
+     "import_to_media_pool=true imports the SRT into Resolve. If no engine is installed it returns "
+     "needs_install: then ask the user whether to download one or skip transcription.",
+     obj({"path": d({"type": ["string", "array"], "items": S}, "Audio/video file path(s)."),
+          "clip": d(CLIPS, "Media pool clips to transcribe (their source files)."),
+          "engine": enum(tuple(ai_tools.ENGINES)),
+          "model": d(S, "tiny | base | small (default) | medium | large-v3 | turbo ..."),
+          "language": d(S, "ISO code like 'en'; default auto-detect."),
+          "translate": d(B, "Translate to English instead of transcribing."),
+          "formats": arr(enum(("srt", "vtt", "txt", "json"))), "word_timestamps": B,
+          "device": enum(("auto", "cpu", "cuda")), "output_dir": S,
+          "import_to_media_pool": B, "bin": S, "timeout": N}), h_transcribe)
+tool("upscale_image",
+     "Enhance/upscale images with the LOCAL open-source Real-ESRGAN (ncnn-vulkan, needs a Vulkan GPU driver). "
+     "Use this for ANY image quality enhancement/upscale request instead of Resolve's Super Scale. Models: "
+     "realesrgan-x4plus (photos, default, 4x), realesrgan-x4plus-anime (illustration, 4x), realesr-animevideov3 "
+     "(2/3/4x). For a timeline frame, export_frame first. If Real-ESRGAN is not installed it returns "
+     "needs_install: then ask the user whether to download it or skip.",
+     obj({"paths": arr(S, "Image file paths."), "clips": d(CLIPS, "Media pool still-image clips."),
+          "model": enum(tuple(sorted(ai_tools.ESRGAN_MODELS))), "scale": d(I, "2, 3 or 4 (x4plus models: 4 only)."),
+          "format": enum(("png", "jpg", "webp")), "output_dir": S,
+          "tile": d(I, "Tile size (lower if out of GPU memory)."),
+          "gpu": I, "import_to_media_pool": B, "bin": S, "timeout": N}), h_upscale)
 
 # --- generic ops-backed tools --------------------------------------------------
 OPS_TOOLS = [
@@ -405,7 +492,7 @@ OPS_TOOLS = [
 for _name, _fn, _desc, _schema in OPS_TOOLS:
     tool(_name, _desc, _schema, "ops:" + _fn)
 
-ANNOTATIONS_READONLY = {"resolve_status", "resolve_api_reference", "project_list", "media_storage_browse",
+ANNOTATIONS_READONLY = {"resolve_status", "ai_tools_status", "resolve_api_reference", "project_list", "media_storage_browse",
                         "media_pool_list", "media_clip_info", "timeline_list", "timeline_info",
                         "timeline_item_info", "color_info", "render_options"}
 
@@ -459,7 +546,10 @@ def handle(msg):
             "instructions": (
                 "Controls DaVinci Resolve (Free or Studio). Start with resolve_status; if not connected and "
                 "Resolve is running with a project open, call resolve_start_bridge (once per Resolve session). "
-                "Prefer the typed tools; use resolve_exec + resolve_api_reference for anything else."),
+                "Prefer the typed tools; use resolve_exec + resolve_api_reference for anything else. For "
+                "transcription/subtitles use `transcribe` and for image enhancement/upscaling use `upscale_image` "
+                "(local open-source Whisper / Real-ESRGAN), never Resolve's built-in AI. If they report "
+                "needs_install, ask the user whether to download from the official source or skip."),
         }
     if method == "tools/list":
         return {"tools": tool_list()}
@@ -469,7 +559,7 @@ def handle(msg):
             return text_result(call_tool(name, params.get("arguments") or {}))
         except NotConnected as e:
             return text_result("NOT CONNECTED: %s" % e, True)
-        except (OpError, ResolveError) as e:
+        except (OpError, ResolveError, AIToolError) as e:
             return text_result(str(e), True)
         except Exception as e:
             return text_result("%s: %s\n%s" % (type(e).__name__, e, traceback.format_exc()[-3000:]), True)

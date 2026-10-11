@@ -1,7 +1,7 @@
 {
   "name": "resolve-pilot",
-  "version": "1.1.1",
-  "description": "Drive DaVinci Resolve (Free and Studio) from Claude: projects, media pool, timelines, editing, markers, color, Fusion, rendering, plus full Python scripting API access through an in-app bridge.",
+  "version": "1.2.0",
+  "description": "Drive DaVinci Resolve (Free and Studio) from Claude: projects, media pool, timelines, editing, markers, color, Fusion, rendering, plus full Python scripting API access through an in-app bridge, and local open-source transcription (Whisper) and image upscaling (Real-ESRGAN).",
   "author": {
     "name": "Abdallah Farhat",
     "url": "https://github.com/Abdallah362728"

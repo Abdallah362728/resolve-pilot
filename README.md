@@ -4,7 +4,7 @@ ResolvePilot is a Claude Code plugin that lets Claude work in **DaVinci Resolve*
 
 ## What Claude can do
 
-It has 43 MCP tools. Claude can:
+It has 47 MCP tools. Claude can:
 - **Projects:** create, open and save projects, and change their settings.
 - **Media:** import media and organise bins.
 - **Timelines:** build timelines and edit clips onto any track.
@@ -14,6 +14,8 @@ It has 43 MCP tools. Claude can:
 - **Fusion:** manage compositions.
 - **Interchange:** export and import FCPXML, EDL, AAF, OTIO and DRT.
 - **Output:** render, and export stills to *look* at the result.
+- **Transcription (local, open source):** turn speech into SRT/VTT/TXT subtitles with faster-whisper or openai-whisper, and import them into the media pool.
+- **Image upscaling (local, open source):** enhance and upscale stills or exported frames with Real-ESRGAN.
 
 For anything else, `resolve_exec` runs Python or Lua against the full official scripting API.
 
@@ -77,13 +79,30 @@ dofile([[<your Fusion Scripts folder>/Utility/ResolvePilot Bridge.lua]])
 | `RESOLVE_PILOT_TIMEOUT` | Seconds to wait for a single Resolve call (default 600) |
 | `RESOLVE_PILOT_LUT_DIR` | Writable LUT folder used when applying external LUT files |
 | `RESOLVE_PILOT_DISABLE_DIRECT=1` | Never try the Studio direct connection |
+| `RESOLVE_PILOT_AI_DIR` | Where local AI tools are installed (default `~/.resolve-pilot`) |
+| `RESOLVE_PILOT_WHISPER_PYTHON` | A Python that already has faster-whisper or openai-whisper |
+| `RESOLVE_PILOT_REALESRGAN` | Path to an existing `realesrgan-ncnn-vulkan` binary |
+
+## Local AI: transcription and upscaling
+
+Claude does not use Resolve's own AI for these. Those features are Studio-only, and the open-source tools work on Free too.
+
+| Task | Tool | Engine | Official source |
+|---|---|---|---|
+| Transcribe / subtitle / caption | `transcribe` | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (preferred) or [openai-whisper](https://github.com/openai/whisper) | PyPI. Models download from Hugging Face (Systran) or OpenAI on first use. |
+| Enhance / upscale an image | `upscale_image` | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) ncnn-vulkan (any Vulkan GPU) | GitHub release v0.2.5.0, checked against a pinned SHA-256 |
+
+- **Already installed?** An engine already in your `python`/`python3` is used as-is. `ai_tools_status` shows what was found.
+- **Missing?** Claude **asks you first**: download from the official source, or skip the task. Nothing is downloaded without your yes.
+- **Where downloads go:** into `~/.resolve-pilot`. The Whisper engines get their own virtual environment there, so your system Python stays untouched.
+- **Removing them:** delete that folder.
 
 ## Free vs Studio
 
 **Free:** every scripting feature works through the bridge.
 
 **Studio-only features** fail on Free, and the tools report them as such. ResolvePilot does not try to unlock them:
-- AI tools: Magic Mask, Smart Reframe, scene-cut detection, transcription/auto-captions, voice isolation, IntelliSearch.
+- AI tools: Magic Mask, Smart Reframe, scene-cut detection, voice isolation, IntelliSearch. (Transcription and upscaling run locally with the open-source tools above instead.)
 - Some codecs, and output above UHD/60 fps.
 
 ## Known Resolve quirks handled for you

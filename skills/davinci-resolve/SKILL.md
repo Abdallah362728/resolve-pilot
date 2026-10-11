@@ -1,6 +1,6 @@
 ---
 name: davinci-resolve
-description: Use when the user wants to edit video, organise media, build or change timelines, add markers/titles, grade, use Fusion, or render/export in DaVinci Resolve. Explains how to drive Resolve through the ResolvePilot MCP tools (mcp__plugin_resolve-pilot_resolve__*), how to connect on Free vs Studio, and verification habits.
+description: Use when the user wants to edit video, organise media, build or change timelines, add markers/titles, grade, use Fusion, transcribe/subtitle footage, enhance/upscale images, or render/export in DaVinci Resolve. Explains how to drive Resolve through the ResolvePilot MCP tools (mcp__plugin_resolve-pilot_resolve__*), how to connect on Free vs Studio, and verification habits.
 ---
 
 # Driving DaVinci Resolve with ResolvePilot
@@ -44,21 +44,36 @@ Why the Console? On the free edition, Scripts-menu scripts run sandboxed without
 - **Interchange**: `timeline_exchange {action:"export", format:"fcpxml"|"edl"|"otio"|"aaf"|"drt"|...}` or `action:"import"`.
 - **See the result**: `export_frame {path:"<tmp>/f.png", position:"01:00:05:00"}`, then read the image. Do this to verify visual changes.
 
-## 4. Anything else → `resolve_exec`
+## 4. Transcription and image upscaling: local open-source tools only
+**Never use Resolve's built-in transcription, auto-subtitles or Super Scale** for these, not even on Studio.
+- **Transcribe, subtitle or caption**: `transcribe {path | clip, model?, language?, formats?, import_to_media_pool?}`.
+  - It uses faster-whisper (preferred) or openai-whisper and writes .srt/.txt.
+  - For a whole timeline, render audio first (`render_timeline`), then transcribe that file.
+- **Enhance, upscale or "improve the quality of" an image**: `upscale_image {paths | clips, model?, scale?, import_to_media_pool?}`.
+  - It uses Real-ESRGAN.
+  - For a timeline frame, `export_frame` first.
+- **If either returns `needs_install: true`**, stop and ask the user with AskUserQuestion. Name the source and size from `options`:
+  - Transcription options: "Download faster-whisper (recommended)", "Download openai-whisper", "Skip transcription".
+  - Upscaling options: "Download Real-ESRGAN", "Skip upscaling".
+  - On a download answer, call `ai_tools_install {tool, user_confirmed:true}`, then retry. On skip, carry on without that step and say so.
+  - Never call `ai_tools_install` without the user's yes in this conversation.
+- `ai_tools_status` shows what is installed.
+
+## 5. Anything else → `resolve_exec`
 - Use `resolve_exec {code}` (Python) with `resolve`, `fusion`, `args` and `ops` in scope.
   - It mirrors the official Python API.
   - Set `result = ...` to return data. The namespace persists between calls.
 - Use `language:"lua"` to run Lua *inside* Resolve, with `resolve`, `fusion`, `bmd` and `args`; return a value. It is fastest for big loops.
 - Look up exact methods with `resolve_api_reference {class_name:"TimelineItem"}` or `{query:"Transition"}`. These come from the user's installed version.
 
-## 5. Free vs Studio, and known Resolve quirks
+## 6. Free vs Studio, and known Resolve quirks
 - **Studio-only features** return False or errors on Free. Report this plainly; don't retry or try to bypass it.
-  - AI tools: Magic Mask, Smart Reframe, scene-cut detection, transcription/auto-subtitles, voice isolation, IntelliSearch, speech generation.
+  - AI tools: Magic Mask, Smart Reframe, scene-cut detection, voice isolation, IntelliSearch, speech generation. (Transcription and upscaling: use section 4.)
   - Some codecs, output above UHD/60p, and Dolby Vision.
 - **Frame rate** can't change once a timeline has clips. `project_settings` reports this under `not_applied`.
 - **Frame checks:** `export_frame` renders the fully composited frame (titles, upper tracks, grade) by default. `method:"still"` is quicker but shows only the clip under the playhead.
 
-## 6. Etiquette
+## 7. Etiquette
 - **Destructive actions need the user's go-ahead** unless they asked for them: deleting clips, timelines, projects or render jobs, and ripple deletes.
 - **Save** with `project_manage {action:"save"}` after significant changes.
 - **Long renders**: use `render_timeline {wait:false}`, then `render_jobs {action:"status"}`.

@@ -17,6 +17,11 @@
 - [x] Composite frame export (render engine) + page restore after renders (Deliver page changes mark semantics)
 - [x] Final cold-start Claude sessions (x2) succeeded; e2e 149/149
 
+- [x] v1.2.0: local open-source AI. `transcribe` (faster-whisper / openai-whisper) and `upscale_image` (Real-ESRGAN
+      ncnn-vulkan), plus `ai_tools_status` and `ai_tools_install`. Missing tools return needs_install so Claude asks
+      before downloading from the official sources. Verified: clean-venv install, transcription, SRT import into the
+      media pool, checksum-verified Real-ESRGAN install, and a 4x upscale.
+
 ## Review
 - **Free edition findings.**
   - `scriptapp` returns None from outside the app.
@@ -31,4 +36,8 @@
   - Still export works only on the Color page.
   - Native title insert ripples V1.
   - A single `SetSettings({useCustomSettings, timelineFrameRate})` call deadlocks Resolve when compound clips exist.
+- **Local AI (v1.2.0).**
+  - faster-whisper 1.2.1 breaks with PyAV 18 and newer (`metadata_errors` kwarg), so installs pin `av<18`.
+  - A `whisper` package without torch counts as not installed.
+  - An SRT imported into the media pool becomes a Subtitle clip.
 - **Performance.** A bridge round trip takes about 0.14 ms, and most tools finish in under 100 ms.
