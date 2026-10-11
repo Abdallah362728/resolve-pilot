@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "resolve": {
+      "command": "uv",
+      "args": ["run", "--no-project", "--quiet", "--python", ">=3.8", "${CLAUDE_PLUGIN_ROOT}/server/mcp_server.py"]
+    }
+  }
+}

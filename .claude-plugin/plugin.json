@@ -1,0 +1,11 @@
+{
+  "name": "resolve-pilot",
+  "version": "1.1.1",
+  "description": "Drive DaVinci Resolve (Free and Studio) from Claude: projects, media pool, timelines, editing, markers, color, Fusion, rendering, plus full Python scripting API access through an in-app bridge.",
+  "author": {
+    "name": "Abdallah Farhat",
+    "url": "https://github.com/Abdallah362728"
+  },
+  "license": "MIT",
+  "keywords": ["davinci-resolve", "video-editing", "color-grading", "mcp", "blackmagic"]
+}
